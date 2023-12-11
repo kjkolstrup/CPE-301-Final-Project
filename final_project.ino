@@ -3,6 +3,8 @@
 #include <DHT.h>
 #include <Stepper.h>
 
+int checkState();
+void changeLED(int pin);
 
 #define RDA 0x80
 #define TBE 0x20  
@@ -35,27 +37,81 @@ volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
 volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
 
 void setup() {
-  //setup water level sensor
-  ddr_f |= 0x01; //output
   Serial.begin(9600);
-  adc_init();
+  *ddr_b |= 0xf0; // set LED pins to output
+
+
 }
+
+#define blueLED 10
+#define greenLED 11
+#define yellowLED 12
+#define redLED 13
+
+#define water_thr 200
+#define temp_thr 30
+
+int water_lvl;
+int temp;
+
+// 1 = running, 2 = idle, 3 = disabled, 4 = error
+int curState = 2;
+int prevState = 2;
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  Serial.println(readWaterLevel());
-  delay(1000);
-  
+  curState = checkState();
+  switch(curState){
+    case 1:
+      //curState = checkState();
+      changeLED(blueLED);
+      break;
+    case 2:
+      //curState = checkState();
+      changeLED(greenLED);
+      break;
+    case 3:
+      changeLED(yellowLED);
+      break;
+    case 4:
+      changeLED(redLED);
+      break;
+    }
+    delay(500);
+
+  }
+
+
+void changeLED(int pin){
+  //turn LEDS off
+  *pin_b |= 0x00;
+
+  switch(pin){
+    case blueLED:
+      *pin_b |= 0x10;
+      break;
+    case greenLED:
+      *pin_b |= 0x20;
+      break;
+    case yellowLED:
+      *pin_b |= 0x40;
+      break;
+    case redLED:
+      *pin_b |= 0x80;
+      break;
+  }
+
 }
 
-int readWaterLevel(){
-  int data;
-  //turn on
-  pin_f |= 0x01;
-  //read data
-  data = adc_read(0);
-  //turn off
-  pin_f &= 0xFE
+int switcher = 0;
+
+int checkState(){
+  if(water_lvl <= water_thr ){
+    return 4;
+  } else if(temp <= temp_thr){
+    return 2;
+  } else if(temp > temp_thr){
+    return 1;
+  }
 }
 
 //UART functions
