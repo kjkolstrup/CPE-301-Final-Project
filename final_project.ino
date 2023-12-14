@@ -15,14 +15,17 @@ void changeLED(int pin);
 volatile unsigned char* port_e = (unsigned char*) 0x2E; 
 volatile unsigned char* ddr_e  = (unsigned char*) 0x2D; 
 volatile unsigned char* pin_e  = (unsigned char*) 0x2C;
+
 //port b (pin 10(pb4), 11(pb5), 12(pb6), 13(pb7))
 volatile unsigned char* port_b = (unsigned char*) 0x25; 
 volatile unsigned char* ddr_b  = (unsigned char*) 0x24; 
 volatile unsigned char* pin_b  = (unsigned char*) 0x23; 
+
 //port f pointers (pf0 = A0)
 volatile unsigned char* port_f = (unsigned char*) 0x31;
 volatile unsigned char* ddr_f  = (unsigned char*) 0x30;
 volatile unsigned char* pin_f  = (unsigned char*) 0x2F;
+
 //UART pointers
 volatile unsigned char *myUCSR0A = (unsigned char *)0x00C0;
 volatile unsigned char *myUCSR0B = (unsigned char *)0x00C1;
@@ -36,11 +39,29 @@ volatile unsigned char* my_ADCSRB = (unsigned char*) 0x7B;
 volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
 volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
 
+// timer pointers
+volatile unsigned char *myTCCR1A = (unsigned char *) 0x80;
+volatile unsigned char *myTCCR1B = (unsigned char *) 0x81;
+volatile unsigned char *myTCCR1C = (unsigned char *) 0x82;
+volatile unsigned char *myTIMSK1 = (unsigned char *) 0x6F;
+volatile unsigned int  *myTCNT1  = (unsigned  int *) 0x84;
+volatile unsigned char *myTIFR1 =  (unsigned char *) 0x36;
+
+// DHT setup    
+#define DHTPIN 8  
+#define DHTTYPE DHT11       
+DHT dht(DHTPIN, DHTTYPE);
+
+//lcd setup
+const int rs = 12, en = 11, d4 = 5, d5 = 4, d6 = 3, d7 = 2;
+LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
+
 void setup() {
   Serial.begin(9600);
   *ddr_b |= 0xf0; // set LED pins to output
-
-
+  adc_init();
+  dht.begin();
+  lcd.begin(16, 2);
 }
 
 #define blueLED 10
@@ -51,8 +72,10 @@ void setup() {
 #define water_thr 200
 #define temp_thr 30
 
+int waterLevel = 0;
 int water_lvl;
-int temp;
+int i = 0;
+float temp;
 
 // 1 = running, 2 = idle, 3 = disabled, 4 = error
 int curState = 2;
@@ -61,22 +84,34 @@ int prevState = 2;
 void loop() {
   curState = checkState();
   switch(curState){
-    case 1:
-      //curState = checkState();
+    case 1: // running
       changeLED(blueLED);
+      // turn on fan
+      // curState = checkState(); 
+        // monitor temp and when low enough switch to idle
+        // monitor water and switch to error if too low
+      displayTemp();
       break;
-    case 2:
-      //curState = checkState();
+    case 2: // idle
       changeLED(greenLED);
+      // turns fan off
+      // curState = checkState(); 
+        // monitor temp and when high enough switch to running
+        // monitor water and switch to error if too low
+      displayTemp();
       break;
-    case 3:
+    case 3: // disabled
       changeLED(yellowLED);
+      // everything off, no monitoring
+      // interupt to monitor start button
+        // switches to idle if pushed
       break;
-    case 4:
+    case 4: // error
       changeLED(redLED);
+      // does nothing until stop or reset button is pushed
       break;
     }
-    delay(500);
+    myDelay(500);
 
   }
 
@@ -105,6 +140,8 @@ void changeLED(int pin){
 int switcher = 0;
 
 int checkState(){
+  water_lvl = readWaterLevelADC(); 
+  temp = dht.readTemperature(true);
   if(water_lvl <= water_thr ){
     return 4;
   } else if(temp <= temp_thr){
@@ -179,4 +216,76 @@ unsigned int adc_read(unsigned char adc_channel_num)
   while((*my_ADCSRA & 0x40) != 0);
   // return the result in the ADC data register
   return *my_ADC_DATA;
+}
+
+int readWaterLevelADC(){
+  int data;
+  //turn on
+  *pin_f |= 0x01;
+
+  //read data
+  myDelay(10);						      // wait 10 milliseconds
+	waterLevel = adc_read(0);		  // Read the analog value form sensor
+  
+  //turn off
+  *pin_f &= 0xFE;
+
+  // repeate for funsies
+  //turn on
+  *pin_f |= 0x01;
+  
+  //read data
+  myDelay(10);						      // wait 10 milliseconds
+	waterLevel = adc_read(0);		  // Read the analog value form sensor
+  
+  //turn off
+  *pin_f &= 0xFE;
+
+  return waterLevel;
+}
+
+// replaces delay
+void myDelay(unsigned int milliseconds) {
+  int freq = (1/milliseconds)*1000;
+  // calc period
+  double period = 1.0/double(freq);
+  // 50% duty cycle
+  double half_period = period/ 2.0f;
+  // clock period def
+  double clk_period = 0.0000000625;
+  // calc ticks
+  unsigned int ticks = half_period / clk_period;
+  // stop the timer
+  *myTCCR1B &= 0xF8;
+  // set the counts
+  *myTCNT1 = (unsigned int) (65536 - ticks);
+  // start the timer
+  * myTCCR1A = 0x0;
+  * myTCCR1B |= 0b00000001;
+  // wait for overflow
+  while((*myTIFR1 & 0x01)==0); // 0b 0000 0000
+  // stop the timer
+  *myTCCR1B &= 0xF8;   // 0b 0000 0000
+  // reset TOV           
+  *myTIFR1 |= 0x01;
+}
+
+void displayTemp(){
+  float h = dht.readHumidity();
+  float f = dht.readTemperature(true);
+
+  lcd.setCursor(0,0);
+  lcd.print("Humidity: ");
+  lcd.setCursor(10,0);
+  lcd.print(h);
+  lcd.setCursor(14,0);
+  lcd.print("%");
+
+  lcd.setCursor(0,1);
+  lcd.print("Temp: ");
+  lcd.setCursor(6,1);
+  lcd.print(f);
+  lcd.setCursor(11,1);
+  lcd.print(char(223));
+  lcd.print("F");  
 }
