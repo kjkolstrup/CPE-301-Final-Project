@@ -27,6 +27,11 @@ volatile unsigned char* port_f = (unsigned char*) 0x31;
 volatile unsigned char* ddr_f  = (unsigned char*) 0x30;
 volatile unsigned char* pin_f  = (unsigned char*) 0x2F;
 
+// Port G Registers
+unsigned char* const pin_g = (unsigned char*) 0x32;
+unsigned char* const port_g = (unsigned char*) 0x34;
+unsigned char* const ddr_g = (unsigned char*) 0x33;
+
 //UART pointers
 volatile unsigned char *myUCSR0A = (unsigned char *)0x00C0;
 volatile unsigned char *myUCSR0B = (unsigned char *)0x00C1;
@@ -58,7 +63,7 @@ const int rs = 31, en = 33, d4 = 37, d5 = 39, d6 = 41, d7 = 43;
 LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 
 //rtc setup
-RTC_DS1307 rtc;
+uRTCLib rtc(0x68);
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
 #define blueLED 10
@@ -67,7 +72,7 @@ char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursd
 #define redLED 13
 
 #define water_thr 100
-#define temp_thr 65
+#define temp_thr 80
 
 int waterLevel = 0;
 int water_lvl;
@@ -93,27 +98,29 @@ void setup() {
   Serial.begin(9600);
   *ddr_b |= 0xf0; // set LED pins to output
   *ddr_e |= 0x04; // set Motor pin to output
-  //toggleMotor(0); // make sure motor starts off
+  toggleMotor(0); // make sure motor starts off
   adc_init(); // initialize ADC
   dht.begin(); // initialize DHT
   lcd.begin(16, 2); // initiialize LCD
-  rtc.begin();
-  //rtc.set(0, 56, 12, 5, 13, 1, 22);
+  URTCLIB_WIRE.begin();
+  rtc.set(0, 56, 12, 5, 13, 1, 22);
+  *ddr_e |= 0x28; //set motor pins to output
+  *ddr_g |= 0x10;
+  *pin_g &= 0xef; // disable CCW direction on motor
+  *pin_e |= 0x20; // set speed of motor high
   attachInterrupt(digitalPinToInterrupt(2), handleButtonPress, RISING); //attach interrupt to start/stop button
 }
 
 void loop() {
   //curState = checkState();
   if (curState != prevState){
-    //stateChange();
+    stateChange();
   }
-  //displayTime();
   switch(curState){
     case 1: // running
       changeLED(blueLED);
       // turn on fan
-      *pin_e |= 0x04;
-      //toggleMotor(1);
+      toggleMotor(1);
       prevState = curState;
       curState = checkState(); 
         // monitor temp and when low enough switch to idle
@@ -123,7 +130,7 @@ void loop() {
     case 2: // idle
       changeLED(greenLED);
       // turns fan off
-      //toggleMotor(0);
+      toggleMotor(0);
       prevState = curState;
       curState = checkState(); 
         // monitor temp and when high enough switch to running
@@ -132,18 +139,21 @@ void loop() {
       break;
     case 3: // disabled
       changeLED(yellowLED);
+      prevState = curState;
       // everything off, no monitoring
-      //toggleMotor(0);
+      toggleMotor(0);
       // interupt to monitor start button
         // switches to idle if pushed
       break;
     case 4: // error
       changeLED(redLED);
       displayErrMsg();
+      prevState = curState;
+      toggleMotor(0);
       // does nothing until stop or reset button is pushed
       break;
     }
-    myDelay(500);
+    myDelay(1000);
 
   }
 
@@ -170,13 +180,11 @@ void changeLED(int pin){
 
 void toggleMotor(bool mode){
   if (!mode){
-    *pin_e |= 0x00;
+    *pin_e &= 0xf7;
   } else {
-    *pin_e |= 0x04;
+    *pin_e |= 0x08;
   }
 }
-
-int switcher = 0;
 
 int checkState(){
   water_lvl = readWaterLevelADC(); 
@@ -188,6 +196,13 @@ int checkState(){
   } else if(temp > temp_thr){
     return 1;
   }
+}
+
+void stateChange(){
+  Serial.println("state changed at: ");
+  myDelay(50);
+  displayTime();
+  myDelay(2000);
 }
 
 //UART functions
@@ -309,25 +324,32 @@ void myDelay(unsigned int milliseconds) {
   *myTIFR1 |= 0x01;
 }
 
+int prevMs = -600000;
+int curMs = 0;
+
 void displayTemp(){
-  float h = dht.readHumidity();
-  float f = dht.readTemperature(true);
-  lcd.clear();
+  curMs = millis();
+  //if ( (curMs - prevMs) >= 60000 ){
+    prevMs = curMs;
+    float h = dht.readHumidity();
+    float f = dht.readTemperature(true);
+    lcd.clear();
 
-  lcd.setCursor(0,0);
-  lcd.print("Humidity: ");
-  lcd.setCursor(10,0);
-  lcd.print(h);
-  lcd.setCursor(14,0);
-  lcd.print("%");
+    lcd.setCursor(0,0);
+    lcd.print("Humidity: ");
+    lcd.setCursor(10,0);
+    lcd.print(h);
+    lcd.setCursor(14,0);
+    lcd.print("%");
 
-  lcd.setCursor(0,1);
-  lcd.print("Temp: ");
-  lcd.setCursor(6,1);
-  lcd.print(f);
-  lcd.setCursor(11,1);
-  lcd.print(char(223));
-  lcd.print("F");  
+    lcd.setCursor(0,1);
+    lcd.print("Temp: ");
+    lcd.setCursor(6,1);
+    lcd.print(f);
+    lcd.setCursor(11,1);
+    lcd.print(char(223));
+    lcd.print("F");  
+  //}
 }
 
 void displayErrMsg(){
@@ -340,13 +362,13 @@ void displayErrMsg(){
 
 void displayTime() {
   U0putchar(' ');
-  DateTime now = rtc.now();
-  int year = now.year();
-  int month = now.month();
-  int day = now.day();
-  int hour = now.hour();
-  int minute = now.minute();
-  int second = now.second();
+  rtc.refresh();
+  int year = rtc.year();
+  int month = rtc.month();
+  int day = rtc.day();
+  int hour = rtc.hour();
+  int minute = rtc.minute();
+  int second = rtc.second();
   char numbers[10] = {'0','1','2','3','4','5','6','7','8','9'};
   int onesYear = year % 10;
   int tensYear = year / 10 % 10;
