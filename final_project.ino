@@ -2,6 +2,8 @@
 #include <RTClib.h>
 #include <DHT.h>
 #include <Stepper.h>
+#include "Arduino.h"
+#include "uRTCLib.h"
 
 int checkState();
 void changeLED(int pin);
@@ -9,9 +11,8 @@ void changeLED(int pin);
 #define RDA 0x80
 #define TBE 0x20  
 
-#define water_threshhold 320
-
-// GPIO Pointers (pins 2(pe4), 3(pe5), 5(pe3))
+// GPIO Pointers 
+// port e (pins 2(pe4), 3(pe5), 5(pe3))
 volatile unsigned char* port_e = (unsigned char*) 0x2E; 
 volatile unsigned char* ddr_e  = (unsigned char*) 0x2D; 
 volatile unsigned char* pin_e  = (unsigned char*) 0x2C;
@@ -21,7 +22,7 @@ volatile unsigned char* port_b = (unsigned char*) 0x25;
 volatile unsigned char* ddr_b  = (unsigned char*) 0x24; 
 volatile unsigned char* pin_b  = (unsigned char*) 0x23; 
 
-//port f pointers (pf0 = A0)
+//port f (pf0 = A0)
 volatile unsigned char* port_f = (unsigned char*) 0x31;
 volatile unsigned char* ddr_f  = (unsigned char*) 0x30;
 volatile unsigned char* pin_f  = (unsigned char*) 0x2F;
@@ -53,24 +54,20 @@ volatile unsigned char *myTIFR1 =  (unsigned char *) 0x36;
 DHT dht(DHTPIN, DHTTYPE);
 
 //lcd setup
-const int rs = 12, en = 11, d4 = 5, d5 = 4, d6 = 3, d7 = 2;
+const int rs = 31, en = 33, d4 = 37, d5 = 39, d6 = 41, d7 = 43;
 LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 
-void setup() {
-  Serial.begin(9600);
-  *ddr_b |= 0xf0; // set LED pins to output
-  adc_init();
-  dht.begin();
-  lcd.begin(16, 2);
-}
+//rtc setup
+RTC_DS1307 rtc;
+char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
 #define blueLED 10
 #define greenLED 11
 #define yellowLED 12
 #define redLED 13
 
-#define water_thr 200
-#define temp_thr 30
+#define water_thr 100
+#define temp_thr 65
 
 int waterLevel = 0;
 int water_lvl;
@@ -81,13 +78,44 @@ float temp;
 int curState = 2;
 int prevState = 2;
 
+//to handle the interrupt when the start/stop button is pressed
+void handleButtonPress(){
+  if (curState == 3){
+      prevState = curState;
+      curState = 2;
+    } else {
+      prevState = curState;
+      curState = 3;
+    }
+}
+
+void setup() {
+  Serial.begin(9600);
+  *ddr_b |= 0xf0; // set LED pins to output
+  *ddr_e |= 0x04; // set Motor pin to output
+  //toggleMotor(0); // make sure motor starts off
+  adc_init(); // initialize ADC
+  dht.begin(); // initialize DHT
+  lcd.begin(16, 2); // initiialize LCD
+  rtc.begin();
+  //rtc.set(0, 56, 12, 5, 13, 1, 22);
+  attachInterrupt(digitalPinToInterrupt(2), handleButtonPress, RISING); //attach interrupt to start/stop button
+}
+
 void loop() {
-  curState = checkState();
+  //curState = checkState();
+  if (curState != prevState){
+    //stateChange();
+  }
+  //displayTime();
   switch(curState){
     case 1: // running
       changeLED(blueLED);
       // turn on fan
-      // curState = checkState(); 
+      *pin_e |= 0x04;
+      //toggleMotor(1);
+      prevState = curState;
+      curState = checkState(); 
         // monitor temp and when low enough switch to idle
         // monitor water and switch to error if too low
       displayTemp();
@@ -95,7 +123,9 @@ void loop() {
     case 2: // idle
       changeLED(greenLED);
       // turns fan off
-      // curState = checkState(); 
+      //toggleMotor(0);
+      prevState = curState;
+      curState = checkState(); 
         // monitor temp and when high enough switch to running
         // monitor water and switch to error if too low
       displayTemp();
@@ -103,18 +133,19 @@ void loop() {
     case 3: // disabled
       changeLED(yellowLED);
       // everything off, no monitoring
+      //toggleMotor(0);
       // interupt to monitor start button
         // switches to idle if pushed
       break;
     case 4: // error
       changeLED(redLED);
+      displayErrMsg();
       // does nothing until stop or reset button is pushed
       break;
     }
     myDelay(500);
 
   }
-
 
 void changeLED(int pin){
   //turn LEDS off
@@ -135,6 +166,14 @@ void changeLED(int pin){
       break;
   }
 
+}
+
+void toggleMotor(bool mode){
+  if (!mode){
+    *pin_e |= 0x00;
+  } else {
+    *pin_e |= 0x04;
+  }
 }
 
 int switcher = 0;
@@ -273,6 +312,7 @@ void myDelay(unsigned int milliseconds) {
 void displayTemp(){
   float h = dht.readHumidity();
   float f = dht.readTemperature(true);
+  lcd.clear();
 
   lcd.setCursor(0,0);
   lcd.print("Humidity: ");
@@ -288,4 +328,68 @@ void displayTemp(){
   lcd.setCursor(11,1);
   lcd.print(char(223));
   lcd.print("F");  
+}
+
+void displayErrMsg(){
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("ERROR: ");
+  lcd.setCursor(0,1);
+  lcd.print("Water Level Low");
+}
+
+void displayTime() {
+  U0putchar(' ');
+  DateTime now = rtc.now();
+  int year = now.year();
+  int month = now.month();
+  int day = now.day();
+  int hour = now.hour();
+  int minute = now.minute();
+  int second = now.second();
+  char numbers[10] = {'0','1','2','3','4','5','6','7','8','9'};
+  int onesYear = year % 10;
+  int tensYear = year / 10 % 10;
+  int onesMonth = month % 10;
+  int tensMonth = month / 10 % 10;
+  int onesDay = day % 10;
+  int tensDay = day / 10 % 10;
+  int onesHour = hour % 10;
+  int tensHour = hour / 10 % 10;
+  int onesMinute = minute % 10;
+  int tensMinute = minute / 10 % 10;
+  int onesSecond = second % 10;
+  int tensSecond = second / 10 % 10;
+  
+  U0putchar('M');
+  U0putchar(':');
+  U0putchar(numbers[tensMonth]);
+  U0putchar(numbers[onesMonth]);
+  U0putchar(' ');
+  U0putchar('D');
+  U0putchar(':');
+  U0putchar(numbers[tensDay]);
+  U0putchar(numbers[onesDay]);
+  U0putchar(' ');
+  U0putchar('Y');
+  U0putchar(numbers[tensYear]);
+  U0putchar(numbers[onesYear]);
+  U0putchar(' ');
+  
+  U0putchar('H');
+  U0putchar(':');
+  U0putchar(numbers[tensHour]);
+  U0putchar(numbers[onesHour]);
+  U0putchar(' ');
+  U0putchar('M');
+  U0putchar(':');
+  U0putchar(numbers[tensMinute]);
+  U0putchar(numbers[onesMinute]);
+  U0putchar(' ');
+  U0putchar('S');
+  U0putchar(':');
+  U0putchar(numbers[tensSecond]);
+  U0putchar(numbers[onesSecond]);
+  U0putchar(' ');
+  U0putchar('\n');
 }
